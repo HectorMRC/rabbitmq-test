@@ -1,0 +1,14 @@
+services:
+    nginx:
+        container_name: rabbitmq
+        image: docker.io/rabbitmq:3.10.2-alpine
+        hostname: rabbitmq
+        restart: always
+        ports:
+            - 5672:5672
+        security_opt:
+            label: disable
+
+networks:
+    shared:
+        external: true
