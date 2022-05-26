@@ -1,35 +1,36 @@
 use futures_lite::stream::StreamExt;
 use lapin::{
     options::*, types::FieldTable, BasicProperties, Channel, Connection, ConnectionProperties,
+    ExchangeKind,
 };
 use std::env;
 use std::error::Error;
 
-const QUEUE_NAME: &str = "example";
+const QUEUE_NAME: &str = "logs";
 
-async fn declare_queue(channel: &Channel)  -> Result<(), Box<dyn Error>> {
+async fn declare_queue(channel: &Channel) -> Result<(), Box<dyn Error>> {
+    let mut exchange_options = ExchangeDeclareOptions::default();
+    exchange_options.durable = true;
+
     channel
-        .queue_declare(
+        .exchange_declare(
             QUEUE_NAME,
-            QueueDeclareOptions::default(),
+            ExchangeKind::Fanout,
+            exchange_options,
             FieldTable::default(),
         )
         .await?;
-    
     Ok(())
 }
 
 async fn emit(channel: Channel) -> Result<(), Box<dyn Error>> {
-    declare_queue(&channel)
-        .await
-        .expect("queue declaration");
+    declare_queue(&channel).await.expect("queue declaration");
 
     channel
         .confirm_select(ConfirmSelectOptions::default())
         .await
         .expect("select confirmation");
 
-    
     let payload = b"Hello world!";
     channel
         .basic_publish(
@@ -44,15 +45,12 @@ async fn emit(channel: Channel) -> Result<(), Box<dyn Error>> {
         .await // Wait for this specific ack/nack
         .expect("publisher-confirms");
 
-
-    println!("Message sent to {}: Hello world!", QUEUE_NAME);
+    println!(" [x] Sent {}", String::from_utf8(payload.to_vec())?);
     Ok(())
 }
 
 async fn receive(channel: Channel) -> Result<(), Box<dyn Error>> {
-    declare_queue(&channel)
-        .await
-        .expect("queue declaration");
+    declare_queue(&channel).await.expect("queue declaration");
 
     let mut consumer = channel
         .basic_consume(
@@ -64,7 +62,7 @@ async fn receive(channel: Channel) -> Result<(), Box<dyn Error>> {
         .await
         .expect("consumer declaration");
 
-    println!("[LOOP] Click Ctrl + C to kill this process...");
+    println!("[*] Waiting for logs. To exit press CTRL+C");
     while let Some(delivery) = consumer.next().await {
         let delivery = delivery.expect("error in consumer");
         let message = String::from_utf8(delivery.data.clone()).expect("get message from utf-8");
