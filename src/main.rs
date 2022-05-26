@@ -9,8 +9,13 @@ use std::error::Error;
 const QUEUE_NAME: &str = "logs";
 
 async fn declare_queue(channel: &Channel) -> Result<(), Box<dyn Error>> {
-    let mut exchange_options = ExchangeDeclareOptions::default();
-    exchange_options.durable = true;
+    let exchange_options = ExchangeDeclareOptions{
+        durable: true,
+        auto_delete: false,
+        internal: false,
+        nowait: false,
+        passive: false,
+    };
 
     channel
         .exchange_declare(
@@ -34,8 +39,8 @@ async fn emit(channel: Channel) -> Result<(), Box<dyn Error>> {
     let payload = b"Hello world!";
     channel
         .basic_publish(
-            "",
             QUEUE_NAME,
+            "",
             BasicPublishOptions::default(),
             payload,
             BasicProperties::default(),
