@@ -1,96 +1,103 @@
-use amiquip::{
-    Connection, ConsumerMessage, ConsumerOptions, ExchangeDeclareOptions, ExchangeType, FieldTable,
-    Publish, QueueDeclareOptions, Result, Channel
+use futures_lite::stream::StreamExt;
+use lapin::{
+    options::*, types::FieldTable, BasicProperties, Channel, Connection, ConnectionProperties,
 };
 use std::env;
+use std::error::Error;
 
-fn emit(channel: Channel) -> Result<()> {
-    // Declare the fanout exchange we will publish to.
-    let exchange = channel.exchange_declare(
-        ExchangeType::Fanout,
-        "logs",
-        ExchangeDeclareOptions::default(),
-    )?;
+const QUEUE_NAME: &str = "example";
 
-    // Publish a message to the logs queue.
-    let mut message = env::args().skip(1).collect::<Vec<_>>().join(" ");
-    if message.is_empty() {
-        message = "info: Hello world!".to_string();
+async fn declare_queue(channel: &Channel)  -> Result<(), Box<dyn Error>> {
+    channel
+        .queue_declare(
+            QUEUE_NAME,
+            QueueDeclareOptions::default(),
+            FieldTable::default(),
+        )
+        .await?;
+    
+    Ok(())
+}
+
+async fn emit(channel: Channel) -> Result<(), Box<dyn Error>> {
+    declare_queue(&channel)
+        .await
+        .expect("queue declaration");
+
+    channel
+        .confirm_select(ConfirmSelectOptions::default())
+        .await
+        .expect("select confirmation");
+
+    
+    let payload = b"Hello world!";
+    channel
+        .basic_publish(
+            "",
+            QUEUE_NAME,
+            BasicPublishOptions::default(),
+            payload,
+            BasicProperties::default(),
+        )
+        .await
+        .expect("basic_publish")
+        .await // Wait for this specific ack/nack
+        .expect("publisher-confirms");
+
+
+    println!("Message sent to {}: Hello world!", QUEUE_NAME);
+    Ok(())
+}
+
+async fn receive(channel: Channel) -> Result<(), Box<dyn Error>> {
+    declare_queue(&channel)
+        .await
+        .expect("queue declaration");
+
+    let mut consumer = channel
+        .basic_consume(
+            QUEUE_NAME,
+            "my_consumer",
+            BasicConsumeOptions::default(),
+            FieldTable::default(),
+        )
+        .await
+        .expect("consumer declaration");
+
+    println!("[LOOP] Click Ctrl + C to kill this process...");
+    while let Some(delivery) = consumer.next().await {
+        let delivery = delivery.expect("error in consumer");
+        let message = String::from_utf8(delivery.data.clone()).expect("get message from utf-8");
+        println!("received message: {}", message);
+
+        delivery.ack(BasicAckOptions::default()).await?;
     }
-
-    exchange.publish(Publish::new(message.as_bytes(), ""))?;
-    println!("Sent [{}]", message);
 
     Ok(())
 }
 
-
-fn receive(channel: Channel) -> Result<()> {
-    // Declare the fanout exchange we will bind to.
-    let exchange = channel.exchange_declare(
-        ExchangeType::Fanout,
-        "logs",
-        ExchangeDeclareOptions::default(),
-    )?;
-
-    // Declare the exclusive, server-named queue we will use to consume.
-    let queue = channel.queue_declare(
-        "",
-        QueueDeclareOptions {
-            exclusive: true,
-            ..QueueDeclareOptions::default()
-        },
-    )?;
-    println!("created exclusive queue {}", queue.name());
-
-    // Bind our queue to the logs exchange.
-    queue.bind(&exchange, "", FieldTable::new())?;
-
-    // Start a consumer. Use no_ack: true so the server doesn't wait for us to ack
-    // the messages it sends us.
-    let consumer = queue.consume(ConsumerOptions {
-        no_ack: true,
-        ..ConsumerOptions::default()
-    })?;
-    println!("Waiting for logs. Press Ctrl-C to exit.");
-
-    for (i, message) in consumer.receiver().iter().enumerate() {
-        match message {
-            ConsumerMessage::Delivery(delivery) => {
-                let body = String::from_utf8_lossy(&delivery.body);
-                println!("({:>3}) {}", i, body);
-            }
-            other => {
-                println!("Consumer ended: {:?}", other);
-                break;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     const OPTIONS: &[&str] = &["-e", "-r"];
     let args: Vec<String> = env::args().collect();
 
     if args.len() == 1 || !OPTIONS.iter().any(|option| option == &args[1]) {
         println!("USAGE:\n\trabbit-test <option>\n");
         println!("OPTIONS:\n\t-e\temit log message\n\t-r\treceive message\n");
-        return Ok(())
+        return Ok(());
     }
-
-    env_logger::init();
 
     const ADDR: &str = "amqp://127.0.0.1:5672/%2f";
-    let mut connection = Connection::insecure_open(ADDR)?;
-    let channel = connection.open_channel(None)?;
+    let connection = Connection::connect(ADDR, ConnectionProperties::default())
+        .await
+        .expect("connection error");
+    let channel = connection.create_channel().await.expect("channel creation");
 
     if args[1] == OPTIONS[0] {
-        emit(channel)?;
+        emit(channel).await?;
     } else if args[1] == OPTIONS[1] {
-        receive(channel)?;
+        receive(channel).await?;
     }
 
-    connection.close()
+    Ok(())
 }
